@@ -2,33 +2,41 @@
 # ============================================================
 # YHDS VPN FULL INSTALLER 2025 — UDP ON
 # SSH • WS/XRAY • TROJAN WS • UDP CUSTOM 1-65535 • Nginx
-# Domain/SSL bisa di-set nanti lewat menu
 # ============================================================
 
 set -euo pipefail
 
-RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; BLUE='\033[34m'; CYAN='\033[36m'; NC='\033[0m'
+# -------------------------------
+# Colors
+# -------------------------------
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+BLUE='\033[34m'
+NC='\033[0m'
 
+# -------------------------------
+# Variables
+# -------------------------------
 GITHUB_RAW="https://raw.githubusercontent.com/Yahdiad1/Udp-custom/main"
 INSTALL_DIR="/root/udp"
 SYSTEMD_FILE="/etc/systemd/system/udp-custom.service"
-LOG_FILE="/var/log/udp-custom.log"
+MENU_FILE="/usr/local/bin/menu"
 DOMAIN_FILE="/etc/xray/domain"
 
 mkdir -p "$INSTALL_DIR"
 
-# ===================== SKIP DOMAIN =====================
-echo -e "${YELLOW}Domain belum di-set, skip konfigurasi SSL...${NC}"
-DOMAIN="localhost"
-echo "$DOMAIN" > $DOMAIN_FILE
-
-# ===================== UPDATE SYSTEM =====================
-echo -e "${GREEN}Updating system & installing dependencies...${NC}"
+# -------------------------------
+# Update system & install dependencies
+# -------------------------------
+echo -e "${GREEN}Updating system & installing tools...${NC}"
 apt update -y && apt upgrade -y
-apt install -y curl wget unzip screen bzip2 gzip figlet lolcat nginx ufw socat cron
+apt install -y curl wget unzip screen bzip2 gzip figlet lolcat nginx ufw socat cron python3-certbot-nginx
 
-# ===================== DISABLE IPV6 =====================
-echo -e "${YELLOW}Disabling IPv6 for UDP stability...${NC}"
+# -------------------------------
+# Disable IPv6 for UDP stability
+# -------------------------------
+echo -e "${YELLOW}Disabling IPv6...${NC}"
 sysctl -w net.ipv6.conf.all.disable_ipv6=1
 sysctl -w net.ipv6.conf.default.disable_ipv6=1
 sysctl -w net.ipv6.conf.lo.disable_ipv6=1
@@ -37,32 +45,41 @@ grep -qxF 'net.ipv6.conf.default.disable_ipv6=1' /etc/sysctl.conf || echo 'net.i
 grep -qxF 'net.ipv6.conf.lo.disable_ipv6=1' /etc/sysctl.conf || echo 'net.ipv6.conf.lo.disable_ipv6=1' >> /etc/sysctl.conf
 sysctl -p
 
-# ===================== INSTALL XRAY =====================
-echo -e "${GREEN}Installing XRAY...${NC}"
-bash -c "$(curl -L https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)"
+# -------------------------------
+# Install Xray
+# -------------------------------
+echo -e "${GREEN}Installing Xray...${NC}"
+bash -c "$(curl -L https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" >/dev/null 2>&1
 
-# ===================== NGINX =====================
+# -------------------------------
+# Install Nginx (HTTP only)
+# -------------------------------
+echo -e "${GREEN}Installing Nginx...${NC}"
 systemctl enable nginx
 systemctl start nginx
 
-# ===================== INSTALL UDP CUSTOM =====================
-echo -e "${GREEN}Installing UDP-Custom...${NC}"
+# -------------------------------
+# Download UDP-Custom
+# -------------------------------
+echo -e "${GREEN}Downloading UDP-Custom...${NC}"
 wget -q "$GITHUB_RAW/udp-custom-linux-amd64" -O "$INSTALL_DIR/udp-custom"
 chmod +x "$INSTALL_DIR/udp-custom"
 wget -q "$GITHUB_RAW/config.json" -O "$INSTALL_DIR/config.json"
 chmod 644 "$INSTALL_DIR/config.json"
-touch "$LOG_FILE"
 
+# -------------------------------
+# Create systemd service
+# -------------------------------
 cat << EOF > "$SYSTEMD_FILE"
 [Unit]
-Description=YHDS UDP-Custom
+Description=YHDS VPN UDP-Custom
 After=network.target
 
 [Service]
-ExecStart=$INSTALL_DIR/udp-custom server >> $LOG_FILE 2>&1
-Restart=always
+Type=simple
+ExecStart=$INSTALL_DIR/udp-custom server
+Restart=on-failure
 User=root
-LimitNOFILE=65535
 WorkingDirectory=$INSTALL_DIR
 
 [Install]
@@ -73,36 +90,43 @@ systemctl daemon-reload
 systemctl enable udp-custom
 systemctl start udp-custom
 
-# ===================== FIREWALL =====================
-echo -e "${YELLOW}Configuring firewall...${NC}"
+# -------------------------------
+# Firewall configuration
+# -------------------------------
+echo -e "${YELLOW}Configuring Firewall...${NC}"
 ufw allow 1:65535/udp
 ufw allow 22,80,443/tcp
 ufw --force enable
 
-# ===================== INSTALL MENU =====================
-echo -e "${GREEN}Installing YHDS Menu...${NC}"
-wget -q "$GITHUB_RAW/menu.sh" -O /usr/local/bin/menu
-chmod +x /usr/local/bin/menu
+# -------------------------------
+# Download menu.sh dari GitHub
+# -------------------------------
+echo -e "${GREEN}Downloading menu.sh from GitHub...${NC}"
+wget -q -O "$MENU_FILE" "$GITHUB_RAW/menu.sh"
+chmod +x "$MENU_FILE"
 
-if ! grep -q "/usr/local/bin/menu" /root/.bashrc; then
-    echo "/usr/local/bin/menu" >> /root/.bashrc
+# Auto-run menu saat login
+if ! grep -q "$MENU_FILE" /root/.bashrc; then
+    echo "$MENU_FILE" >> /root/.bashrc
 fi
 
-# ===================== AUTO BACKUP =====================
+# -------------------------------
+# Auto-backup harian
+# -------------------------------
 cat << EOF > /etc/cron.daily/yhds-backup
 #!/bin/bash
 tar -czf /root/yhds-backup-\$(date +%F).tar.gz /etc/xray /root/udp /etc/passwd /etc/shadow /etc/group
 EOF
 chmod +x /etc/cron.daily/yhds-backup
 
-# ===================== DONE =====================
+# -------------------------------
+# Finish
+# -------------------------------
 clear
 echo -e "${GREEN}========================================================${NC}"
 echo -e "${GREEN}       INSTALLATION COMPLETED SUCCESSFULLY!             ${NC}"
 echo -e "${GREEN}========================================================${NC}"
-echo -e "${BLUE}Domain     : ${YELLOW}$DOMAIN${NC}"
-echo -e "${BLUE}Menu       : ${YELLOW}menu${NC}"
-echo -e "${BLUE}UDP Log    : ${YELLOW}$LOG_FILE${NC}"
-echo -e "${BLUE}Auto Backup: ${YELLOW}/root/yhds-backup-*.tar.gz${NC}"
-echo -e "${BLUE}Github     : ${YELLOW}https://github.com/Yahdiad1/${NC}"
-echo -e "${GREEN}UDP CUSTOM 1-65535 AKTIF${NC}"
+echo -e "${BLUE}Use command ${YELLOW}menu${BLUE} to open the VPN management menu.${NC}"
+echo -e "${BLUE}UDP + Xray + Nginx siap digunakan${NC}"
+echo -e "${BLUE}Auto-run menu setelah login atau close terminal${NC}"
+echo -e "${BLUE}Github: https://github.com/Yahdiad1/Udp-custom${NC}"
