@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# YHDS VPN FULL INSTALLER 2025 — UDP ON
+# YHDS VPN FULL INSTALLER 2025 — UDP ON + MENU 1–20
 # SSH • WS/XRAY • TROJAN WS • UDP CUSTOM 1-65535 • Nginx
 # ============================================================
 
@@ -9,11 +9,7 @@ set -euo pipefail
 # -------------------------------
 # Colors
 # -------------------------------
-RED='\033[31m'
-GREEN='\033[32m'
-YELLOW='\033[33m'
-BLUE='\033[34m'
-NC='\033[0m'
+RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; BLUE='\033[34m'; NC='\033[0m'
 
 # -------------------------------
 # Variables
@@ -52,7 +48,7 @@ echo -e "${GREEN}Installing Xray...${NC}"
 bash -c "$(curl -L https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" >/dev/null 2>&1
 
 # -------------------------------
-# Install Nginx (HTTP only)
+# Install Nginx
 # -------------------------------
 echo -e "${GREEN}Installing Nginx...${NC}"
 systemctl enable nginx
@@ -99,9 +95,10 @@ ufw allow 22,80,443/tcp
 ufw --force enable
 
 # -------------------------------
-# Download menu.sh dari GitHub
+# Install menu 1–20 terbaru
 # -------------------------------
-echo -e "${GREEN}Downloading menu.sh from GitHub...${NC}"
+echo -e "${GREEN}Downloading menu.sh 1–20 from GitHub...${NC}"
+if [ -f "$MENU_FILE" ]; then rm -f "$MENU_FILE"; fi
 wget -q -O "$MENU_FILE" "$GITHUB_RAW/menu.sh"
 chmod +x "$MENU_FILE"
 
@@ -128,5 +125,5 @@ echo -e "${GREEN}       INSTALLATION COMPLETED SUCCESSFULLY!             ${NC}"
 echo -e "${GREEN}========================================================${NC}"
 echo -e "${BLUE}Use command ${YELLOW}menu${BLUE} to open the VPN management menu.${NC}"
 echo -e "${BLUE}UDP + Xray + Nginx siap digunakan${NC}"
-echo -e "${BLUE}Auto-run menu setelah login atau close terminal${NC}"
+echo -e "${BLUE}Auto-run menu terbaru setelah login atau close terminal${NC}"
 echo -e "${BLUE}Github: https://github.com/Yahdiad1/Udp-custom${NC}"
