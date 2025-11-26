@@ -11,11 +11,10 @@ DOMAIN_FILE="/etc/xray/domain"
 [[ -f $DOMAIN_FILE ]] && domain=$(cat $DOMAIN_FILE) || domain="example.com"
 
 # ===== TELEGRAM AUTO BACKUP =====
-BOT_TOKEN="ISI_TOKEN_BOT"
-CHAT_ID="ISI_CHAT_ID"
+BOT_TOKEN=""   # ISI_TOKEN_BOT
+CHAT_ID=""     # ISI_CHAT_ID
 BACKUP_DIR="/root/backup-auto"
 mkdir -p $BACKUP_DIR
-
 
 # ================= STATUS =================
 status() {
@@ -77,15 +76,17 @@ backup_auto() {
 
   size=$(du -h "$file" | awk '{print $1}')
 
-  # KIRIM FILE BACKUP KE TELEGRAM
-  curl -s -F document=@"$file" \
-    -F caption="🔐 *Auto Backup Harian*
+  # KIRIM FILE BACKUP KE TELEGRAM JIKA TOKEN ADA
+  if [[ -n "$BOT_TOKEN" ]] && [[ -n "$CHAT_ID" ]]; then
+    curl -s -F document=@"$file" \
+      -F caption="🔐 *Auto Backup Harian*
 📅 Tanggal : $date_now
 📦 Size : $size
 🌐 Domain : $domain
 Status : *Sukses*" \
-    -F parse_mode="Markdown" \
-    "https://api.telegram.org/bot$BOT_TOKEN/sendDocument?chat_id=$CHAT_ID" >/dev/null
+      -F parse_mode="Markdown" \
+      "https://api.telegram.org/bot$BOT_TOKEN/sendDocument?chat_id=$CHAT_ID" >/dev/null
+  fi
 
   # HAPUS BACKUP LAMA (7 Hari)
   find "$BACKUP_DIR" -mtime +7 -delete
@@ -93,42 +94,40 @@ Status : *Sukses*" \
 
 # ================= OUTPUT ACCOUNT =================
 output_account() {
-user=$1
-pass=$2
-exp=$3
-
-clear
-echo "━━━━━━━━━━━━━━━━━━━  INFORMATION ACCOUNT SSH  ━━━━━━━━━━━━━━━━━━━"
-echo "Username        : $user"
-echo "Password        : $pass"
-echo "Limit IP        : Unlimited"
-echo "━━━━━━━━━━━━━━━━━━━"
-echo "Domain          : $domain"
-echo "OpenSSH         : 22"
-echo "Dropbear        : 109, 143"
-echo "SSL/TLS         : 443"
-echo "SSH WS TLS      : 443"
-echo "SSH WS None TLS : 80"
-echo "SSH UDP Custom  : 1-65535"
-echo "━━━━━━━━━━━━━━━━━━━"
-echo "SSH WS TLS       : $domain:443@$user:$pass"
-echo "SSH WS NONE TLS  : $domain:80@$user:$pass"
-echo "SSH UDP CUSTOM   : $domain:1-65535@$user:$pass"
-echo "━━━━━━━━━━━━━━━━━━━"
-echo "PAYLOAD SSH WS"
-echo "GET / HTTP/1.1[crlf]"
-echo "Host: $domain[crlf]"
-echo "Connection: Upgrade[crlf]"
-echo "Upgrade: websocket[crlf][crlf]"
-echo "━━━━━━━━━━━━━━━━━━━"
-echo "Active      : $exp"
-echo "Created     : $(date +"%d %b %Y")"
-echo "━━━━━━━━━━━━━━━━━━━"
-read -n1 -r -p "Press any key..."
+  user=$1
+  pass=$2
+  exp=$3
+  clear
+  echo "━━━━━━━━━━━━━━━━━━━  INFORMATION ACCOUNT SSH  ━━━━━━━━━━━━━━━━━━━"
+  echo "Username        : $user"
+  echo "Password        : $pass"
+  echo "Limit IP        : Unlimited"
+  echo "━━━━━━━━━━━━━━━━━━━"
+  echo "Domain          : $domain"
+  echo "OpenSSH         : 22"
+  echo "Dropbear        : 109, 143"
+  echo "SSL/TLS         : 443"
+  echo "SSH WS TLS      : 443"
+  echo "SSH WS None TLS : 80"
+  echo "SSH UDP Custom  : 1-65535"
+  echo "━━━━━━━━━━━━━━━━━━━"
+  echo "SSH WS TLS       : $domain:443@$user:$pass"
+  echo "SSH WS NONE TLS  : $domain:80@$user:$pass"
+  echo "SSH UDP CUSTOM   : $domain:1-65535@$user:$pass"
+  echo "━━━━━━━━━━━━━━━━━━━"
+  echo "PAYLOAD SSH WS"
+  echo "GET / HTTP/1.1[crlf]"
+  echo "Host: $domain[crlf]"
+  echo "Connection: Upgrade[crlf]"
+  echo "Upgrade: websocket[crlf][crlf]"
+  echo "━━━━━━━━━━━━━━━━━━━"
+  echo "Active      : $exp"
+  echo "Created     : $(date +"%d %b %Y")"
+  echo "━━━━━━━━━━━━━━━━━━━"
+  read -n1 -r -p "Press any key..."
 }
 
 # ================= FUNCTIONS =================
-
 create_user() {
   read -p "Username: " u
   read -p "Password: " p
@@ -163,10 +162,8 @@ create_trojan() {
   read -p "Password: " pass
   read -p "Durasi hari: " days
   exp=$(date -d "+$days days" +"%d %b %Y")
-
   sed -i "/\"email\": \"$user\"/d" /etc/xray/config.json
   sed -i "/\"clients\": \[/a\        {\"password\": \"$pass\", \"email\": \"$user\"}," /etc/xray/config.json
-
   systemctl restart xray
   clear
   echo "━━━━━━━━━━━━━━━━━━ TROJAN WS ACCOUNT ━━━━━━━━━━━━━━━━━━"
@@ -184,8 +181,12 @@ create_trojan() {
 bot_telegram() { echo "Bot aktif"; read -n1; }
 
 restart_service() { 
-  systemctl restart ssh xray nginx trojan-go udp-custom 2>/dev/null
-  echo "Semua service direstart!"
+  for svc in ssh xray nginx trojan-go udp-custom; do
+    if systemctl list-unit-files | grep -qw "$svc.service"; then
+      systemctl restart $svc
+    fi
+  done
+  echo "Semua service yang ada berhasil direstart!"
   read -n1
 }
 
@@ -193,9 +194,18 @@ manual_payload() { echo "GET wss://$domain/ HTTP/1.1"; read -n1; }
 
 set_domain() {
   read -p "Domain baru: " dm
+  if [[ -z "$dm" ]]; then
+    echo "Domain kosong, skip restart service."
+    return
+  fi
   echo "$dm" > $DOMAIN_FILE
   domain="$dm"
-  systemctl restart xray nginx
+  for svc in xray nginx; do
+    if systemctl list-unit-files | grep -qw "$svc.service"; then
+      systemctl restart $svc
+    fi
+  done
+  echo "Domain berhasil diset dan service direstart."
 }
 
 renew_user() { 
@@ -212,7 +222,10 @@ info_vps() { hostnamectl; curl -s ipv4.icanhazip.com; uptime -p; read -n1; }
 
 restore_users() { ls /root; read -p "File: " file; tar -xzf /root/$file -C /; systemctl restart xray udp-custom; }
 
-view_logs() { less /var/log/udp-custom.log; }
+view_logs() { 
+  [[ -f /var/log/udp-custom.log ]] && less /var/log/udp-custom.log || echo "Log UDP tidak ditemukan"; 
+  read -n1
+}
 
 clean_expired() {
   today=$(date +%s)
@@ -235,7 +248,7 @@ while true; do
     4) create_trojan ;;
     5) trial_user ;;
     6) lock_unlock ;;
-    7) w; read -n1 ;;
+    7) clear; w; read -n1 ;;
     8) bot_telegram ;;
     9) restart_service ;;
     10) rm -f /usr/local/bin/menu; exit ;;
@@ -245,7 +258,7 @@ while true; do
     14) renew_user ;;
     15) toggle_service ;;
     16) info_vps ;;
-    17) backup_auto; read -n1 ;;
+    17) backup_auto ;;
     18) restore_users ;;
     19) view_logs ;;
     20) clean_expired ;;
