@@ -10,6 +10,13 @@ BLUE='\e[34m'; CYAN='\e[36m'; NC='\e[0m'
 DOMAIN_FILE="/etc/xray/domain"
 [[ -f $DOMAIN_FILE ]] && domain=$(cat $DOMAIN_FILE) || domain="example.com"
 
+# ===== TELEGRAM AUTO BACKUP =====
+BOT_TOKEN="ISI_TOKEN_BOT"
+CHAT_ID="ISI_CHAT_ID"
+BACKUP_DIR="/root/backup-auto"
+mkdir -p $BACKUP_DIR
+
+
 # ================= STATUS =================
 status() {
   echo -e "${GREEN}Status Server:${NC}"
@@ -50,11 +57,38 @@ show_menu() {
   printf " %-25s %-25s\n" "4) Create Trojan" "14) Renew Akun"
   printf " %-25s %-25s\n" "5) Trial SSH" "15) ON/OFF Service"
   printf " %-25s %-25s\n" "6) Lock/Unlock" "16) Info VPS"
-  printf " %-25s %-25s\n" "7) Dashboard" "17) Backup"
+  printf " %-25s %-25s\n" "7) Dashboard" "17) Backup Manual"
   printf " %-25s %-25s\n" "8) Bot Telegram" "18) Restore"
   printf " %-25s %-25s\n" "9) Restart All" "19) View UDP Logs"
   printf " %-25s %-25s\n" "10) Remove Script" "20) Clean Expired"
   echo -e "${NC}"
+}
+
+# ================= AUTO BACKUP TELEGRAM =================
+backup_auto() {
+  date_now=$(date +%F)
+  file="$BACKUP_DIR/backup-$date_now.tar.gz"
+
+  tar -czf "$file" \
+    /etc/xray \
+    /etc/passwd /etc/group /etc/shadow \
+    /etc/ssh \
+    /var/lib 2>/dev/null
+
+  size=$(du -h "$file" | awk '{print $1}')
+
+  # KIRIM FILE BACKUP KE TELEGRAM
+  curl -s -F document=@"$file" \
+    -F caption="🔐 *Auto Backup Harian*
+📅 Tanggal : $date_now
+📦 Size : $size
+🌐 Domain : $domain
+Status : *Sukses*" \
+    -F parse_mode="Markdown" \
+    "https://api.telegram.org/bot$BOT_TOKEN/sendDocument?chat_id=$CHAT_ID" >/dev/null
+
+  # HAPUS BACKUP LAMA (7 Hari)
+  find "$BACKUP_DIR" -mtime +7 -delete
 }
 
 # ================= OUTPUT ACCOUNT =================
@@ -94,6 +128,7 @@ read -n1 -r -p "Press any key..."
 }
 
 # ================= FUNCTIONS =================
+
 create_user() {
   read -p "Username: " u
   read -p "Password: " p
@@ -129,7 +164,6 @@ create_trojan() {
   read -p "Durasi hari: " days
   exp=$(date -d "+$days days" +"%d %b %Y")
 
-  # Fix duplicate insert (safe)
   sed -i "/\"email\": \"$user\"/d" /etc/xray/config.json
   sed -i "/\"clients\": \[/a\        {\"password\": \"$pass\", \"email\": \"$user\"}," /etc/xray/config.json
 
@@ -176,10 +210,6 @@ toggle_service() { read -p "Service: " s; systemctl is-active --quiet $s && syst
 
 info_vps() { hostnamectl; curl -s ipv4.icanhazip.com; uptime -p; read -n1; }
 
-backup_users() {
-  tar -czf /root/yhds-backup-$(date +%F).tar.gz /etc/xray /etc/passwd /etc/shadow /etc/group
-}
-
 restore_users() { ls /root; read -p "File: " file; tar -xzf /root/$file -C /; systemctl restart xray udp-custom; }
 
 view_logs() { less /var/log/udp-custom.log; }
@@ -215,7 +245,7 @@ while true; do
     14) renew_user ;;
     15) toggle_service ;;
     16) info_vps ;;
-    17) backup_users ;;
+    17) backup_auto; read -n1 ;;
     18) restore_users ;;
     19) view_logs ;;
     20) clean_expired ;;
