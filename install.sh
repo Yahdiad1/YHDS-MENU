@@ -33,8 +33,8 @@ echo -e "${GREEN}→ Update & install dependencies...${NC}"
 apt update -y && apt upgrade -y
 apt install -y curl wget unzip socat netcat jq cron nginx certbot screen bzip2 gzip figlet lolcat
 
-systemctl enable nginx
-systemctl restart nginx
+# Restart Nginx dengan aman
+nginx -t && systemctl enable nginx && systemctl restart nginx
 
 # -------------------------
 # Direktori Xray
@@ -104,7 +104,7 @@ server {
     }
 }
 EOF
-systemctl restart nginx
+nginx -t && systemctl restart nginx
 
 # -------------------------
 # Trojan WS 443
@@ -138,9 +138,7 @@ cat <<EOF >/etc/xray/trojan-443.json
 }
 EOF
 
-# -------------------------
-# Trojan WS service
-# -------------------------
+# Trojan WS systemd service
 XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
 cat <<EOF >/etc/systemd/system/trojanws.service
 [Unit]
@@ -150,6 +148,9 @@ After=network.target
 [Service]
 ExecStart=$XRAY_BIN run -config /etc/xray/trojan-443.json
 Restart=always
+RestartSec=5s
+User=root
+WorkingDirectory=/etc/xray
 
 [Install]
 WantedBy=multi-user.target
@@ -168,6 +169,7 @@ while true; do
 done
 EOF
 chmod +x /usr/local/bin/sshws
+
 cat <<EOF >/etc/systemd/system/sshws.service
 [Unit]
 Description=SSH WebSocket Service
@@ -176,6 +178,9 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/sshws
 Restart=always
+RestartSec=5s
+User=root
+WorkingDirectory=/usr/local/bin
 
 [Install]
 WantedBy=multi-user.target
@@ -190,6 +195,7 @@ systemctl restart sshws
 mkdir -p /usr/local/bin
 wget -q -O /usr/local/bin/udp-custom https://raw.githubusercontent.com/Yahdiad1/Udp-custom/main/udp-custom-linux-amd64
 chmod +x /usr/local/bin/udp-custom
+
 cat <<EOF >/etc/systemd/system/udp-custom.service
 [Unit]
 Description=UDP Forwarder YHDS
@@ -198,6 +204,9 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/udp-custom -p 1-65535
 Restart=always
+RestartSec=5s
+User=root
+WorkingDirectory=/usr/local/bin
 
 [Install]
 WantedBy=multi-user.target
@@ -217,7 +226,7 @@ grep -qxF "menu" /root/.bashrc || echo "menu" >> /root/.bashrc
 # Cron Auto Backup
 # -------------------------
 mkdir -p /root/YHDS-BACKUP
-(crontab -l 2>/dev/null; echo "0 3 * * * tar -czf /root/YHDS-BACKUP/daily-\$(date +\%F).tar.gz /etc/xray /etc/udp") | crontab -
+(crontab -l 2>/dev/null; echo "0 3 * * * tar -czf /root/YHDS-BACKUP/daily-\$(date +\%F).tar.gz /etc/xray /usr/local/bin/udp-custom /etc/nginx /etc/ssl 2>/dev/null") | crontab -
 
 # -------------------------
 # Finish
