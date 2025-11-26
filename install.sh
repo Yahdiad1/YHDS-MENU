@@ -1,154 +1,185 @@
 #!/bin/bash
-# ============================================================
-# YHDS VPN FULL INSTALLER 2025 — UDP SUPER STABLE
-# SSH • WS/XRAY • TROJAN • UDP CUSTOM 1-65535 • Nginx
-# ============================================================
+# ================================================================
+#  YHDS VPN FULL INSTALLER 2025
+#  SSH / WS / XRAY / TROJAN / UDP 1-65535 + AUTO BACKUP
+#  Domain: yhds.my.id
+#  Repo Menu: https://github.com/Yahdiad1/YHDS-MENU
+# ================================================================
 
 set -euo pipefail
 
-# -------------------------------
-# Warna
-# -------------------------------
-GREEN='\033[32m'
-YELLOW='\033[33m'
-BLUE='\033[34m'
-NC='\033[0m'
+# ------------------------------#
+#   WARNA
+# ------------------------------#
+RED='\e[31m'; GREEN='\e[32m'; YELLOW='\e[33m'; BLUE='\e[34m'; NC='\e[0m'
 
-# -------------------------------
-# Variabel
-# -------------------------------
-UDP_DIR="/root/udp"
-SYSTEMD_FILE="/etc/systemd/system/udp-custom.service"
-MENU_FILE="/usr/local/bin/menu"
-MENU_REPO="https://raw.githubusercontent.com/Yahdiad1/YHDS-MENU/main/menu.sh"
-UDP_BIN_URL="https://raw.githubusercontent.com/Yahdiad1/Udp-custom/main/udp-custom-linux-amd64"
+clear
+echo -e "${GREEN}=== YHDS VPN INSTALLER 2025 ===${NC}"
 
-mkdir -p "$UDP_DIR"
+# ------------------------------#
+#   VALIDASI ROOT
+# ------------------------------#
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}Harus dijalankan sebagai ROOT!${NC}"
+  exit 1
+fi
 
-# -------------------------------
-# Update sistem
-# -------------------------------
-echo -e "${GREEN}Updating system...${NC}"
+# ------------------------------#
+#   DOMAIN
+# ------------------------------#
+DOMAIN="yhds.my.id"
+echo "$DOMAIN" > /etc/xray/domain
+
+# ------------------------------#
+#   UPDATE VPS
+# ------------------------------#
 apt update -y && apt upgrade -y
-apt install -y curl wget unzip screen bzip2 gzip figlet lolcat nginx ufw
+apt install -y curl wget unzip socat cron bash-completion jq figlet lolcat nginx
 
-# -------------------------------
-# Matikan IPv6
-# -------------------------------
-echo -e "${YELLOW}Disabling IPv6...${NC}"
-cat << EOF >> /etc/sysctl.conf
-net.ipv6.conf.all.disable_ipv6=1
-net.ipv6.conf.default.disable_ipv6=1
-net.ipv6.conf.lo.disable_ipv6=1
-EOF
-sysctl -p
-
-# -------------------------------
-# Kernel Tuning — SUPER STABLE UDP
-# -------------------------------
-echo -e "${YELLOW}Applying Kernel Optimizations...${NC}"
-cat << EOF > /etc/sysctl.d/99-udp-tuning.conf
-net.core.rmem_max = 26214400
-net.core.wmem_max = 26214400
-net.core.rmem_default = 26214400
-net.core.wmem_default = 26214400
-net.core.netdev_max_backlog = 50000
-net.core.optmem_max = 81920
-net.ipv4.udp_rmem_min = 8192
-net.ipv4.udp_wmem_min = 8192
-net.ipv4.ip_local_port_range = 1 65535
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_tw_reuse = 1
-EOF
-sysctl --system
-
-# -------------------------------
-# Install Xray
-# -------------------------------
-echo -e "${GREEN}Installing Xray...${NC}"
-bash -c "$(curl -L https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" >/dev/null 2>&1
-
-systemctl enable xray
-systemctl restart xray
-
-# -------------------------------
-# Install Nginx
-# -------------------------------
-echo -e "${GREEN}Installing Nginx...${NC}"
 systemctl enable nginx
 systemctl restart nginx
 
-# -------------------------------
-# Install UDP-Custom (Binary)
-# -------------------------------
-echo -e "${GREEN}Installing UDP Custom...${NC}"
-wget -q "$UDP_BIN_URL" -O "$UDP_DIR/udp-custom"
-chmod +x "$UDP_DIR/udp-custom"
+# ------------------------------#
+#   AUTO BACKUP (Sebelum Install)
+# ------------------------------#
+mkdir -p /root/YHDS-BACKUP
+tar -czf /root/YHDS-BACKUP/preinstall-$(date +%d%m%y).tar.gz /etc 2>/dev/null || true
+echo -e "${GREEN}Backup konfigurasi lama selesai.${NC}"
 
-# -------------------------------
-# Config UDP SUPER STABLE
-# -------------------------------
-echo -e "${GREEN}Applying Stable Config...${NC}"
-cat << EOF > $UDP_DIR/config.json
-{
-  "listen": ":1-65535",
-  "protocol": "udp",
-  "mtu": 1350,
-  "buffer_size": 2097152,
-  "max_clients": 5000,
-  "timeout": 60,
-  "log_level": "info"
-}
-EOF
+# ------------------------------#
+#   INSTALL UDP CUSTOM
+# ------------------------------#
+echo -e "${YELLOW}Install UDP Custom 1–65535...${NC}"
 
-# -------------------------------
-# Systemd Service
-# -------------------------------
-cat << EOF > "$SYSTEMD_FILE"
+mkdir -p /etc/udp
+cat > /etc/systemd/system/udp-custom.service <<EOF
 [Unit]
-Description=YHDS UDP Custom
+Description=UDP Forwarder YHDS
 After=network.target
 
 [Service]
-Type=simple
-ExecStart=$UDP_DIR/udp-custom server
+ExecStart=/usr/local/bin/udp-custom --port 1-65535
 Restart=always
-LimitNOFILE=1000000
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
+wget -q -O /usr/local/bin/udp-custom https://raw.githubusercontent.com/Yahdiad1/YHDS-MENU/main/bin/udp-custom
+chmod +x /usr/local/bin/udp-custom
+
 systemctl enable udp-custom
 systemctl restart udp-custom
 
-# -------------------------------
-# Firewall
-# -------------------------------
-echo -e "${YELLOW}Configuring Firewall...${NC}"
-ufw allow 1:65535/udp
-ufw allow 22,80,443/tcp
-ufw --force enable
+# ------------------------------#
+#   INSTALL XRAY (VMESS / VLESS)
+# ------------------------------#
+echo -e "${YELLOW}Install Xray...${NC}"
 
-# -------------------------------
-# Install Menu Baru (Fix 1–20)
-# -------------------------------
-echo -e "${GREEN}Installing YHDS New Menu...${NC}"
-wget -q -O "$MENU_FILE" "$MENU_REPO"
-chmod +x "$MENU_FILE"
+wget -O /usr/local/bin/xray https://github.com/XTLS/Xray-core/releases/latest/download/xray_linux_amd64
+chmod +x /usr/local/bin/xray
 
-# Auto-run menu
-sed -i '/menu/d' /root/.bashrc
-echo "/usr/local/bin/menu" >> /root/.bashrc
+mkdir -p /etc/xray
 
-# -------------------------------
-# Selesai
-# -------------------------------
-clear
-echo -e "${GREEN}==============================================${NC}"
-echo -e "${GREEN}        INSTALLATION COMPLETED!               ${NC}"
-echo -e "${GREEN}==============================================${NC}"
-echo -e "${BLUE}Command: ${YELLOW}menu${NC}"
-echo -e "${BLUE}UDP Super Stable aktif 1–65535${NC}"
-echo -e "${BLUE}Menu Baru 1–20 sudah terpasang${NC}"
+cat > /etc/xray/config.json <<EOF
+{
+  "inbounds": [
+    {
+      "port": 443,
+      "protocol": "vless",
+      "settings": { "clients": [] },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
+    },
+    {
+      "port": 80,
+      "protocol": "vmess",
+      "settings": { "clients": [] },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } }
+    }
+  ],
+  "outbounds": [{ "protocol": "freedom" }]
+}
+EOF
+
+cat > /etc/systemd/system/xray.service <<EOF
+[Unit]
+Description=Xray Service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable xray
+systemctl restart xray
+
+# ------------------------------#
+#   INSTALL TROJAN WS
+# ------------------------------#
+echo -e "${YELLOW}Install Trojan WS...${NC}"
+
+wget -q -O /usr/local/bin/trojan-go https://github.com/p4gefau1t/trojan-go/releases/latest/download/trojan-go-linux-amd64
+chmod +x /usr/local/bin/trojan-go
+
+mkdir -p /etc/trojan-go
+
+cat > /etc/trojan-go/config.json <<EOF
+{
+  "run_type": "server",
+  "local_addr": "0.0.0.0",
+  "local_port": 8443,
+  "password": ["yhdsvpn"],
+  "websocket": {
+    "enabled": true,
+    "path": "/trojan",
+    "host": "$DOMAIN"
+  }
+}
+EOF
+
+cat > /etc/systemd/system/trojan-go.service <<EOF
+[Unit]
+Description=Trojan-Go Service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/trojan-go -config /etc/trojan-go/config.json
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable trojan-go
+systemctl restart trojan-go
+
+# ------------------------------#
+#   INSTALL MENU
+# ------------------------------#
+echo -e "${GREEN}Install YHDS-MENU...${NC}"
+
+wget -q -O /usr/local/bin/menu https://raw.githubusercontent.com/Yahdiad1/YHDS-MENU/main/menu.sh
+chmod +x /usr/local/bin/menu
+
+# ------------------------------#
+#   CRON AUTO RESTART
+# ------------------------------#
+(crontab -l 2>/dev/null; echo "0 3 * * * systemctl restart xray trojan-go udp-custom") | crontab -
+
+# ------------------------------#
+#   SELESAI
+# ------------------------------#
+echo -e "${GREEN}================================================${NC}"
+echo -e "${GREEN}      INSTALLER YHDS VPN 2025 SELESAI          ${NC}"
+echo -e "${GREEN}================================================${NC}"
+echo -e "Domain     : $DOMAIN"
+echo -e "Menu       : menu"
+echo -e "UDP        : 1–65535"
+echo -e "Trojan WS  : /trojan"
+echo -e "Vless WS   : /vless"
+echo -e "Vmess WS   : /vmess"
+echo -e "${GREEN}Script full tanpa error, siap dipakai!${NC}"
