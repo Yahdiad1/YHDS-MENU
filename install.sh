@@ -1,85 +1,86 @@
 #!/bin/bash
 # ============================================================
-#  YHDS VPN — FINAL INSTALLER 2025
-#  SSH WS 80/443 • VMESS • VLESS • TROJAN-WS • UDP Custom
+# YHDS VPN ALL-IN-ONE INSTALLER 2025
+# SSH • WS/XRAY • TROJAN WS • UDP CUSTOM • Nginx • Menu Premium
 # ============================================================
 
 set -euo pipefail
+RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; BLUE='\033[34m'; NC='\033[0m'
 
 # -------------------------
-# WARNA
+# Validasi ROOT
 # -------------------------
-BLUE='\033[34m'
-YELLOW='\033[33m'
-GREEN='\033[32m'
-RED='\033[31m'
-NC='\033[0m'
-
-clear
-echo -e "${BLUE}=============================================="
-echo -e "            YHDS VPN INSTALLER 2025"
-echo -e "==============================================${NC}"
-
-# -------------------------
-# VALIDASI ROOT
-# -------------------------
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Harus dijalankan sebagai ROOT!${NC}"
-    exit 1
+if [[ $EUID -ne 0 ]]; then
+  echo -e "${RED}Harus dijalankan sebagai ROOT!${NC}"
+  exit 1
 fi
 
 # -------------------------
-# DISABLE IPV6
+# Disable IPv6
 # -------------------------
 echo -e "${YELLOW}→ Disable IPv6...${NC}"
 cat <<EOF >/etc/sysctl.d/99-disable-ipv6.conf
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sysctl --system >/dev/null 2>&1
 
 # -------------------------
-# INPUT DOMAIN
+# Update system & dependencies
 # -------------------------
-read -rp "Masukkan Domain (ex: yhds.my.id): " DOMAIN
-echo "$DOMAIN" >/etc/xray/domain
-
-# -------------------------
-# UPDATE SYSTEM & DEPENDENCIES
-# -------------------------
-echo -e "${YELLOW}→ Update system & install dependencies...${NC}"
+echo -e "${GREEN}→ Update & install dependencies...${NC}"
 apt update -y && apt upgrade -y
-apt install -y curl wget unzip nginx socat cron netcat jq certbot
+apt install -y curl wget unzip socat netcat jq cron nginx certbot screen bzip2 gzip figlet lolcat
 
 systemctl enable nginx
 systemctl restart nginx
 
 # -------------------------
-# BACKUP PRA-INSTALL
+# Direktori Xray
 # -------------------------
-mkdir -p /root/YHDS-BACKUP
-tar -czf /root/YHDS-BACKUP/preinstall-$(date +%d%m%y).tar.gz /etc 2>/dev/null || true
-echo -e "${GREEN}Backup konfigurasi lama selesai.${NC}"
+mkdir -p /etc/xray
+echo -e "${GREEN}Direktori /etc/xray siap${NC}"
 
 # -------------------------
-# SETUP NGINX REVERSE PROXY WS
+# Input Domain
 # -------------------------
-echo -e "${YELLOW}→ Setup Nginx reverse proxy...${NC}"
+read -rp "Masukkan Domain (kosongkan jika belum ada): " DOMAIN
+if [[ -n "$DOMAIN" ]]; then
+  echo "$DOMAIN" >/etc/xray/domain
+fi
+
+# -------------------------
+# Install Xray Core
+# -------------------------
+echo -e "${GREEN}→ Install Xray Core...${NC}"
+bash -c "$(curl -L https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" >/dev/null 2>&1
+UUID=$(cat /proc/sys/kernel/random/uuid)
+
+# -------------------------
+# Konfigurasi Xray WS
+# -------------------------
+cat <<EOF >/etc/xray/config.json
+{
+  "log": { "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log", "loglevel": "warning" },
+  "inbounds": [
+    { "port": 10000, "listen": "127.0.0.1", "protocol": "vless", "settings": { "clients": [ { "id": "$UUID" } ], "decryption": "none" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } } },
+    { "port": 10001, "listen": "127.0.0.1", "protocol": "vmess", "settings": { "clients": [ { "id": "$UUID" } ] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } } }
+  ],
+  "outbounds": [ { "protocol": "freedom" } ]
+}
+EOF
+systemctl restart xray
+
+# -------------------------
+# Nginx reverse proxy
+# -------------------------
 rm -f /etc/nginx/conf.d/default.conf
 cat <<EOF >/etc/nginx/conf.d/ws.conf
 server {
-    listen 80;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
     location /sshws {
         proxy_pass http://127.0.0.1:8880;
         proxy_http_version 1.1;
@@ -87,7 +88,6 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
     }
-
     location /vless {
         proxy_pass http://127.0.0.1:10000;
         proxy_http_version 1.1;
@@ -95,7 +95,6 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
     }
-
     location /vmess {
         proxy_pass http://127.0.0.1:10001;
         proxy_http_version 1.1;
@@ -103,74 +102,65 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
     }
-
-    location /trojan {
-        proxy_pass http://127.0.0.1:10002;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-    }
 }
 EOF
-
 systemctl restart nginx
 
 # -------------------------
-# INSTALL CERTBOT SSL
+# Trojan WS 443
 # -------------------------
-echo -e "${YELLOW}→ Mendapatkan SSL/TLS via Certbot...${NC}"
-systemctl stop nginx
-certbot certonly --standalone -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN
-systemctl start nginx
+if [[ -n "$DOMAIN" ]]; then
+    echo -e "${YELLOW}→ Setup Trojan WS TLS...${NC}"
+    certbot certonly --standalone -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN
+    SSL_CERT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+    SSL_KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+    SECURITY="tls"
+else
+    SSL_CERT=""; SSL_KEY=""; SECURITY="none"
+fi
 
-# -------------------------
-# INSTALL XRAY CORE
-# -------------------------
-echo -e "${YELLOW}→ Install Xray Core...${NC}"
-bash <(curl -s https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
-
-uuid=$(cat /proc/sys/kernel/random/uuid)
-
-# -------------------------
-# KONFIG XRAY WS (VLESS / VMESS / TROJAN)
-# -------------------------
-cat <<EOF >/etc/xray/config.json
+cat <<EOF >/etc/xray/trojan-443.json
 {
-  "log": { "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log", "loglevel": "warning" },
   "inbounds": [
     {
-      "port": 10000,
-      "listen": "127.0.0.1",
-      "protocol": "vless",
-      "settings": { "clients": [ { "id": "$uuid" } ], "decryption": "none" },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
-    },
-    {
-      "port": 10001,
-      "listen": "127.0.0.1",
-      "protocol": "vmess",
-      "settings": { "clients": [ { "id": "$uuid" } ] },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } }
-    },
-    {
-      "port": 10002,
-      "listen": "127.0.0.1",
+      "port": 443,
       "protocol": "trojan",
-      "settings": { "clients": [ { "password": "$uuid" } ] },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } }
+      "settings": { "clients": [ { "password": "$UUID" } ] },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/trojan" },
+        "security": "$SECURITY",
+        "tlsSettings": { "certificates": [ { "certificateFile": "$SSL_CERT", "keyFile": "$SSL_KEY" } ] }
+      }
     }
   ],
   "outbounds": [ { "protocol": "freedom" } ]
 }
 EOF
 
-systemctl restart xray
+# -------------------------
+# Trojan WS service
+# -------------------------
+XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
+cat <<EOF >/etc/systemd/system/trojanws.service
+[Unit]
+Description=Trojan WS 443 Service
+After=network.target
+
+[Service]
+ExecStart=$XRAY_BIN run -config /etc/xray/trojan-443.json
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable trojanws
+systemctl restart trojanws
 
 # -------------------------
-# SSH WEBSOCKET 80/443
+# SSH WebSocket service
 # -------------------------
-echo -e "${YELLOW}→ Setup SSH WS...${NC}"
 cat <<'EOF' >/usr/local/bin/sshws
 #!/bin/bash
 while true; do
@@ -178,7 +168,6 @@ while true; do
 done
 EOF
 chmod +x /usr/local/bin/sshws
-
 cat <<EOF >/etc/systemd/system/sshws.service
 [Unit]
 Description=SSH WebSocket Service
@@ -191,18 +180,16 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
-
 systemctl daemon-reload
 systemctl enable sshws
 systemctl restart sshws
 
 # -------------------------
-# UDP CUSTOM 1–65535
+# UDP Custom service
 # -------------------------
-echo -e "${YELLOW}→ Install UDP Custom...${NC}"
-wget -q -O /usr/local/bin/udp-custom https://raw.githubusercontent.com/Yahdiad1/YHDS-MENU/main/bin/udp-custom
+mkdir -p /usr/local/bin
+wget -q -O /usr/local/bin/udp-custom https://raw.githubusercontent.com/Yahdiad1/Udp-custom/main/udp-custom-linux-amd64
 chmod +x /usr/local/bin/udp-custom
-
 cat <<EOF >/etc/systemd/system/udp-custom.service
 [Unit]
 Description=UDP Forwarder YHDS
@@ -215,38 +202,34 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
-
 systemctl daemon-reload
 systemctl enable udp-custom
 systemctl restart udp-custom
 
 # -------------------------
-# MENU YHDS
+# Menu YHDS VPN
 # -------------------------
 wget -q -O /usr/local/bin/menu https://raw.githubusercontent.com/Yahdiad1/YHDS-MENU/main/menu.sh
 chmod +x /usr/local/bin/menu
-if ! grep -q "menu" /root/.bashrc; then
-    echo "menu" >> /root/.bashrc
-fi
+grep -qxF "menu" /root/.bashrc || echo "menu" >> /root/.bashrc
 
 # -------------------------
-# AUTO BACKUP CRON
+# Cron Auto Backup
 # -------------------------
 mkdir -p /root/YHDS-BACKUP
 (crontab -l 2>/dev/null; echo "0 3 * * * tar -czf /root/YHDS-BACKUP/daily-\$(date +\%F).tar.gz /etc/xray /etc/udp") | crontab -
 
 # -------------------------
-# FINISH
+# Finish
 # -------------------------
 clear
 echo -e "${GREEN}==============================================${NC}"
 echo -e "${GREEN}      INSTALLER YHDS VPN 2025 SELESAI          ${NC}"
 echo -e "${GREEN}==============================================${NC}"
-echo -e "Domain     : $DOMAIN"
-echo -e "UUID       : $uuid"
+echo -e "UUID       : $UUID"
 echo -e "SSH WS     : 80 / 443"
 echo -e "VMESS WS   : 443 (via Nginx)"
 echo -e "VLESS WS   : 443 (via Nginx)"
-echo -e "TROJAN WS  : 443 (via Nginx)"
+echo -e "TROJAN WS  : 443 (TLS jika domain ada)"
 echo -e "UDP Custom : 1–65535"
-echo -e "${GREEN}==============================================${NC}"
+echo -e "${GREEN}Menu otomatis bisa diakses dengan perintah ${YELLOW}menu${GREEN}${NC}"
