@@ -1,0 +1,453 @@
+#!/bin/bash
+# ============================================================
+# YHDS VPN MANAGEMENT MENU (Mode A - Stable) - FIXED
+# - SSH local (22)
+# - SSH over WebSocket via nginx reverse proxy (path /ssh-ws)
+# - Xray Trojan WS (path /trojan-ws) + safe add/remove clients
+# - UDP-Custom users file handling
+# - Backup / Restore (safe), Logs, Expiry cleaning
+# ============================================================
+set -euo pipefail
+IFS=$'\n\t'
+
+# Colors
+RED='\e[31m'; GREEN='\e[32m'; YELLOW='\e[33m'; BLUE='\e[34m'; CYAN='\e[36m'; NC='\e[0m'
+
+# Files & defaults
+DOMAIN_FILE="/etc/xray/domain"
+UDP_USERS="/etc/udp-custom/users"
+XRAY_CFG="/etc/xray/config.json"
+BACKUP_DIR="/root/backup-auto"
+LOG_UDP="/var/log/udp/udp-custom.log"
+XTR_TROJAN_HELPER="/usr/local/bin/xray-trojan-client"   # helper installer may provide this
+
+# Ensure directories & files
+mkdir -p "$(dirname "$DOMAIN_FILE")"
+mkdir -p "$(dirname "$LOG_UDP")"
+mkdir -p "$BACKUP_DIR"
+mkdir -p /etc/udp-custom
+touch "$UDP_USERS" 2>/dev/null || true
+
+# Load domain if present
+if [[ -f "$DOMAIN_FILE" ]]; then
+  domain=$(cat "$DOMAIN_FILE")
+else
+  domain="example.com"
+fi
+
+# Helpers
+service_exists() {
+  local svc="$1"
+  systemctl list-unit-files --type=service 2>/dev/null | awk '{print $1}' | grep -qw "${svc}.service"
+}
+safe_run() {
+  if ! "$@"; then
+    echo -e "${YELLOW}Warning: command failed: $*${NC}"
+  fi
+}
+ensure_jq() {
+  if ! command -v jq >/dev/null 2>&1; then
+    safe_run apt-get update -y
+    safe_run apt-get install -y jq
+  fi
+}
+
+# Banner & status
+status() {
+  echo -e "${GREEN}Status Server:${NC}"
+  for svc in ssh xray nginx udp-custom; do
+    if service_exists "$svc"; then
+      if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
+        echo -e "  ${CYAN}${svc}${NC} : ${GREEN}ON${NC}"
+      else
+        echo -e "  ${CYAN}${svc}${NC} : ${RED}OFF${NC}"
+      fi
+    else
+      echo -e "  ${CYAN}${svc}${NC} : ${YELLOW}NOT INSTALLED${NC}"
+    fi
+  done
+  echo ""
+}
+banner() {
+  clear
+  cat <<'EOF'
+__  ____  ______  _____    _    ______  _   __
+\ \/ / / / / __ \/ ___/   | |  / / __ \/ | / /
+ \  / /_/ / / / /\__ \    | | / / /_/ /  |/ /
+ / / __  / /_/ /___/ /    | |/ / ____/ /|  /
+/_/_/ /_/_____//____/     |___/_/   /_/ |_/
+EOF
+  echo -e "${CYAN}          YHDS VPN - MANAGEMENT MENU${NC}"
+  echo
+  status
+}
+
+show_menu() {
+  echo -e "${YELLOW}"
+  printf " %-25s %-25s\n" "1) Create SSH" "11) Manual Payload"
+  printf " %-25s %-25s\n" "2) Delete SSH" "12) Set Domain"
+  printf " %-25s %-25s\n" "3) List User" "13) Exit"
+  printf " %-25s %-25s\n" "4) Create Trojan" "14) Renew Akun"
+  printf " %-25s %-25s\n" "5) Trial SSH" "15) ON/OFF Service"
+  printf " %-25s %-25s\n" "6) Lock/Unlock" "16) Info VPS"
+  printf " %-25s %-25s\n" "7) Dashboard" "17) Backup Manual"
+  printf " %-25s %-25s\n" "8) Bot Telegram" "18) Restore"
+  printf " %-25s %-25s\n" "9) Restart All" "19) View UDP Logs"
+  printf " %-25s %-25s\n" "10) Remove Script" "20) Clean Expired"
+  echo -e "${NC}"
+}
+
+# Backup (safe) - FIXED domain append
+backup_auto() {
+  local date_now file gzfile size
+  date_now=$(date +%F)
+  file="$BACKUP_DIR/backup-$date_now.tar"
+  gzfile="${file}.gz"
+
+  # safe backup: only xray dir + udp-users
+  tar -cf "$file" -C / etc/xray 2>/dev/null || true
+  tar --append -f "$file" -C / etc/udp-custom 2>/dev/null || true
+  # append domain file explicitly if exists
+  if [[ -f "$DOMAIN_FILE" ]]; then
+    # DOMAIN_FILE is e.g. /etc/xray/domain -> add using relative path from /
+    relpath="${DOMAIN_FILE#/}"   # remove leading /
+    tar --append -f "$file" -C / "$relpath" 2>/dev/null || true
+  fi
+
+  # gzip final
+  gzip -f "$file" 2>/dev/null || true
+
+  if [[ -f "$gzfile" ]]; then
+    size=$(du -h "$gzfile" | awk '{print $1}')
+    echo "Backup created: $gzfile ($size)"
+  else
+    echo "Backup failed"
+  fi
+
+  # if BOT_TOKEN & CHAT_ID set, send to telegram (user must fill)
+  if [[ -n "${BOT_TOKEN:-}" && -n "${CHAT_ID:-}" && -f "$gzfile" ]]; then
+    curl -s -F document=@"$gzfile" -F caption="Backup: $date_now | $size" "https://api.telegram.org/bot$BOT_TOKEN/sendDocument?chat_id=$CHAT_ID" >/dev/null || true
+  fi
+
+  # cleanup older than 7 days
+  find "$BACKUP_DIR" -type f -mtime +7 -delete || true
+}
+
+# Output account info
+output_account() {
+  local user="$1" pass="$2" exp="$3"
+  clear
+  cat <<OUT
+════════ INFORMATION ACCOUNT ════════
+Username : $user
+Password : $pass
+Domain   : $domain
+OpenSSH  : 22
+SSH WS   : via nginx reverse proxy (path /ssh-ws)
+Trojan WS: trojan://$pass@$domain:443?type=ws&path=/trojan-ws&host=$domain&sni=$domain#$user
+UDP      : $domain:1-65535
+Expired  : $exp
+════════════════════════════════════
+OUT
+  read -n1 -r -p "Press any key..."
+}
+
+# Create SSH user
+create_user() {
+  read -rp "Username: " u
+  [[ -z "$u" ]] && { echo "Username kosong"; read -n1; return; }
+  if id -u "$u" >/dev/null 2>&1; then
+    echo "User sudah ada"; read -n1; return
+  fi
+  read -rp "Password: " p
+  read -rp "Expired (hari): " e
+  if ! [[ "$e" =~ ^[0-9]+$ ]]; then e=30; fi
+  useradd -e "$(date -d "+$e days" +"%Y-%m-%d")" -M -s /bin/false "$u" 2>/dev/null || { echo "Gagal membuat user"; read -n1; return; }
+  echo "$u:$p" | chpasswd || true
+  exp=$(date -d "+$e days" +"%d %b %Y")
+  mkdir -p /etc/udp-custom
+  grep -qxF "$u $p" "$UDP_USERS" || echo "$u $p" >> "$UDP_USERS"
+  output_account "$u" "$p" "$exp"
+}
+
+# Delete user (FIXED helper remove usage + fallback)
+delete_user() {
+  read -rp "Username: " user
+  [[ -z "$user" ]] && { echo "Nama kosong"; read -n1; return; }
+  if id -u "$user" >/dev/null 2>&1; then
+    userdel -f "$user" || true
+    sed -i "/^${user} /d" "$UDP_USERS" || true
+    # remove trojan client entry safely: try helper with sensible args, fallback to jq
+    if [[ -x "$XTR_TROJAN_HELPER" ]]; then
+      # try common helper signatures
+      safe_run "$XTR_TROJAN_HELPER" remove "$user" >/dev/null 2>&1 || true
+      safe_run "$XTR_TROJAN_HELPER" remove "" "$user" >/dev/null 2>&1 || true
+    else
+      if [[ -f "$XRAY_CFG" ]]; then
+        ensure_jq
+        tmp=$(mktemp)
+        jq --arg e "$user" '(.inbounds[]? | select(.protocol=="trojan") | .settings.clients) |= (map(select(.email != $e)))' "$XRAY_CFG" > "$tmp" && mv "$tmp" "$XRAY_CFG" || true
+        safe_run systemctl restart xray || true
+      fi
+    fi
+    echo "User removed"
+  else
+    echo "User tidak ditemukan"
+  fi
+  read -n1
+}
+
+# List users
+list_user() {
+  awk -F: '$3>=1000 {print $1}' /etc/passwd || true
+  echo
+  echo "=== UDP-Custom users ==="
+  cat "$UDP_USERS" 2>/dev/null || echo "(empty)"
+  read -n1
+}
+
+# Trial user (1 day)
+trial_user() {
+  local u p tp
+  u="trial$(openssl rand -hex 3)"
+  p="trial"
+  useradd -e "$(date -d '+1 days' +"%Y-%m-%d")" -M -s /bin/false "$u" || true
+  echo "$u:$p" | chpasswd || true
+  grep -qxF "$u $p" "$UDP_USERS" || echo "$u $p" >> "$UDP_USERS"
+  tp=$(uuidgen)
+  if [[ -x "$XTR_TROJAN_HELPER" ]]; then
+    "$XTR_TROJAN_HELPER" add "$tp" "$u" >/dev/null 2>&1 || true
+  fi
+  output_account "$u" "$p" "$(date -d '+1 days' +'%d %b %Y')"
+}
+
+# Lock/unlock user
+lock_unlock() {
+  read -rp "Username: " user
+  [[ -z "$user" ]] && { echo "Nama kosong"; read -n1; return; }
+  if ! id -u "$user" >/dev/null 2>&1; then echo "User tidak ditemukan"; read -n1; return; fi
+  status=$(passwd -S "$user" 2>/dev/null || echo "")
+  if echo "$status" | grep -q " L "; then
+    passwd -u "$user" || true
+    echo "Unlocked"
+  else
+    passwd -l "$user" || true
+    echo "Locked"
+  fi
+  read -n1
+}
+
+# Create Trojan (FIXED inbound creation to avoid port conflict)
+create_trojan() {
+  read -rp "User: " user
+  [[ -z "$user" ]] && { echo "Username kosong"; read -n1; return; }
+  read -rp "Password (trojan): " pass
+  read -rp "Durasi hari: " days
+  if ! [[ "$days" =~ ^[0-9]+$ ]]; then days=30; fi
+  exp=$(date -d "+$days days" +"%d %b %Y")
+
+  if [[ -x "$XTR_TROJAN_HELPER" ]]; then
+    "$XTR_TROJAN_HELPER" add "$pass" "$user" >/dev/null 2>&1 || true
+  else
+    if [[ -f "$XRAY_CFG" ]]; then
+      ensure_jq
+      # if a trojan inbound exists, just add client
+      if jq -e '.inbounds[]? | select(.protocol=="trojan")' "$XRAY_CFG" >/dev/null 2>&1; then
+        tmp2=$(mktemp)
+        jq --arg p "$pass" --arg e "$user" '(.inbounds[] | select(.protocol=="trojan") | .settings.clients) |= (. + [{"password":$p,"email":$e}])' "$XRAY_CFG" > "$tmp2" && mv "$tmp2" "$XRAY_CFG" || true
+      else
+        # check if port 443 already used by a non-trojan inbound
+        if jq -e '.inbounds[]? | select(.port==443) | select(.protocol!="trojan")' "$XRAY_CFG" >/dev/null 2>&1; then
+          port=8443
+        else
+          port=443
+        fi
+        tmp=$(mktemp)
+        jq --argjson prt "$port" '.inbounds += [{"port":('"$port"'),"listen":"0.0.0.0","protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"ws","wsSettings":{"path":"/trojan-ws"},"security":"tls"}}]' "$XRAY_CFG" > "$tmp" && mv "$tmp" "$XRAY_CFG" || true
+        tmp2=$(mktemp)
+        jq --arg p "$pass" --arg e "$user" '(.inbounds[] | select(.protocol=="trojan") | .settings.clients) |= (. + [{"password":$p,"email":$e}])' "$XRAY_CFG" > "$tmp2" && mv "$tmp2" "$XRAY_CFG" || true
+      fi
+      safe_run systemctl restart xray || true
+    fi
+  fi
+
+  clear
+  echo "━━━━━━━━ TROJAN WS ACCOUNT ━━━━━━━━"
+  echo "User : $user"
+  echo "Pass : $pass"
+  echo "Domain: $domain"
+  echo "Expires: $exp"
+  echo
+  echo "Link (example):"
+  echo "trojan://$pass@$domain:443?type=ws&path=/trojan-ws&host=$domain&sni=$domain#$user"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  read -n1
+}
+
+# Restart available services
+restart_service() {
+  for svc in ssh xray nginx udp-custom; do
+    if service_exists "$svc"; then
+      safe_run systemctl restart "${svc}.service"
+    fi
+  done
+  echo "Restart attempted for available services."
+  read -n1
+}
+
+# Manual payload (display)
+manual_payload() {
+  cat <<PAY
+HTTP WebSocket Payload example (nginx reverse proxy):
+
+GET /ssh-ws HTTP/1.1
+Host: $domain
+Upgrade: websocket
+Connection: Upgrade
+
+Use this payload in clients that support SSH over WebSocket.
+PAY
+  read -n1
+}
+
+# Set domain (writes /etc/xray/domain)
+set_domain() {
+  read -rp "Domain baru: " dm
+  [[ -z "$dm" ]] && { echo "Domain kosong"; read -n1; return; }
+  echo "$dm" > "$DOMAIN_FILE"
+  domain="$dm"
+  safe_run systemctl restart xray || true
+  safe_run systemctl restart nginx || true
+  echo "Domain diset: $dm"
+  read -n1
+}
+
+# Renew user expiry (safe)
+renew_user() {
+  read -rp "User: " u
+  [[ -z "$u" ]] && { echo "User kosong"; read -n1; return; }
+  if ! id -u "$u" >/dev/null 2>&1; then echo "User tidak ditemukan"; read -n1; return; fi
+  read -rp "Tambah hari: " add
+  if ! [[ "$add" =~ ^[0-9]+$ ]]; then echo "Masukkan angka valid"; read -n1; return; fi
+
+  old=$(chage -l "$u" | awk -F': ' '/Account expires/ {print $2}')
+  if [[ -z "$old" || "$old" == "never" ]]; then
+    base=$(date +%F)
+  else
+    if date -d "$old" >/dev/null 2>&1; then
+      base="$old"
+    else
+      base=$(date +%F)
+    fi
+  fi
+  new=$(date -d "$base + $add days" +"%Y-%m-%d")
+  chage -E "$new" "$u" || true
+  echo "User $u extended to $new"
+  read -n1
+}
+
+# Toggle service (start/stop) - safe
+toggle_service() {
+  read -rp "Service name (e.g. nginx, xray, udp-custom): " s
+  [[ -z "$s" ]] && { echo "Service kosong"; read -n1; return; }
+  if ! service_exists "$s"; then echo "Service $s tidak ditemukan"; read -n1; return; fi
+  if systemctl is-active --quiet "${s}.service"; then
+    systemctl stop "${s}.service" || true
+    echo "Stopped ${s}"
+  else
+    systemctl start "${s}.service" || true
+    echo "Started ${s}"
+  fi
+  read -n1
+}
+
+# Info VPS
+info_vps() {
+  hostnamectl
+  echo "IP:"; curl -s ipv4.icanhazip.com || true
+  uptime -p
+  read -n1
+}
+
+# Restore backup (FIXED safer extraction)
+restore_users() {
+  echo "Available backups in $BACKUP_DIR:"
+  ls -1 "$BACKUP_DIR" 2>/dev/null || echo "(none)"
+  read -rp "File to restore (basename): " file
+  [[ -z "$file" ]] && { echo "Canceled"; read -n1; return; }
+  local path="$BACKUP_DIR/$file"
+  if [[ ! -f "$path" ]]; then echo "File not found"; read -n1; return; fi
+  if ! tar -tzf "$path" | grep -E '^etc/(xray|udp-custom|domain|ssh)' >/dev/null 2>&1; then
+    echo "Backup contains unsupported content. Abort."
+    read -n1; return
+  fi
+  # extract (do not use --no-overwrite-dir because it can behave differently on some tar versions)
+  tar -xzf "$path" -C / || true
+  safe_run systemctl restart xray || true
+  safe_run systemctl restart udp-custom || true
+  echo "Restore attempted. Check files manually."
+  read -n1
+}
+
+# View UDP logs
+view_logs() {
+  if [[ -f "$LOG_UDP" ]]; then
+    less "$LOG_UDP"
+  else
+    echo "No UDP log found at $LOG_UDP"
+    read -n1
+  fi
+}
+
+# Clean expired users
+clean_expired() {
+  local today u exp
+  today=$(date +%s)
+  for u in $(awk -F: '$3>=1000 {print $1}' /etc/passwd); do
+    exp=$(chage -l "$u" | awk -F': ' '/Account expires/ {print $2}')
+    if [[ -z "$exp" || "$exp" == "never" ]]; then
+      continue
+    fi
+    if date -d "$exp" >/dev/null 2>&1; then
+      if [ "$(date -d "$exp" +%s)" -lt "$today" ]; then
+        userdel -f "$u" || true
+        sed -i "/^${u} /d" "$UDP_USERS" || true
+        if [[ -x "$XTR_TROJAN_HELPER" ]]; then
+          "$XTR_TROJAN_HELPER" remove "$u" >/dev/null 2>&1 || true
+        fi
+        echo "Removed expired: $u"
+      fi
+    fi
+  done
+  read -n1
+}
+
+# Main loop
+while true; do
+  banner
+  show_menu
+  read -rp "Pilih menu: " x
+  case $x in
+    1) create_user ;;
+    2) delete_user ;;
+    3) list_user ;;
+    4) create_trojan ;;
+    5) trial_user ;;
+    6) lock_unlock ;;
+    7) clear; w; read -n1 ;;
+    8) echo "Bot placeholder. Fill BOT_TOKEN and CHAT_ID variables at top to enable."; read -n1 ;;
+    9) restart_service ;;
+    10) rm -f /usr/local/bin/menu; echo "Menu removed"; exit 0 ;;
+    11) manual_payload ;;
+    12) set_domain ;;
+    13) exit 0 ;;
+    14) renew_user ;;
+    15) toggle_service ;;
+    16) info_vps ;;
+    17) backup_auto ;;
+    18) restore_users ;;
+    19) view_logs ;;
+    20) clean_expired ;;
+    *) echo "Pilihan tidak valid"; sleep 1 ;;
+  esac
+done
